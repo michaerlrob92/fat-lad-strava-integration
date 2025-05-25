@@ -19,7 +19,7 @@ public class StravaWebhookFunction(
     
     [Function("StravaWebhookFunction")]
     public async Task<IActionResult> Run(
-        [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = "strava-webhook")]
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "strava-webhook")]
         HttpRequest req)
     {
         try
