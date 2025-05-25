@@ -16,7 +16,7 @@ public class StravaCallbackFunction(
 {
     [Function("StravaCallbackFunction")]
     public async Task<IActionResult> Run(
-        [HttpTrigger(AuthorizationLevel.Function, "get", Route = "strava-callback")]
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "strava-callback")]
         HttpRequest req)
     {
         try
