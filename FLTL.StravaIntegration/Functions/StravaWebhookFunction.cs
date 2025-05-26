@@ -133,10 +133,7 @@ public class StravaWebhookFunction(
         if (userData != null)
         {
             // Fetch activity details using the access token
-            _ = Task.Run(async () =>
-            {
-                await FetchAndProcessActivity(userData, webhookEvent.ObjectId);
-            });
+            await FetchAndProcessActivity(userData, webhookEvent.ObjectId);
         }
     }
 
