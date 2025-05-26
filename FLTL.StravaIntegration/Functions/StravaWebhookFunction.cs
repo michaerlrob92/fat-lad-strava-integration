@@ -95,24 +95,22 @@ public class StravaWebhookFunction(
             {
                 logger.LogWarning("Failed to parse webhook payload");
                 return new BadRequestObjectResult("Invalid payload");
-            }            logger.LogInformation("Received webhook: {AspectType} {ObjectType} for owner {OwnerId}",
+            }            
+            
+            logger.LogInformation("Received webhook: {AspectType} {ObjectType} for owner {OwnerId}",
                 webhookEvent.AspectType, webhookEvent.ObjectType, webhookEvent.OwnerId);
 
             // Process activity creation events (fire-and-forget to avoid HttpContext disposal)
             if (webhookEvent.AspectType == "create" && webhookEvent.ObjectType == "activity")
             {
-                // Start processing in background without awaiting
-                _ = Task.Run(async () =>
+                try
                 {
-                    try
-                    {
-                        await ProcessActivityCreated(webhookEvent);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex, "Error in background processing of activity {ActivityId}", webhookEvent.ObjectId);
-                    }
-                });
+                    await ProcessActivityCreated(webhookEvent);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Error in background processing of activity {ActivityId}", webhookEvent.ObjectId);
+                }
             }
 
             return new OkObjectResult("Event processed");
@@ -135,7 +133,10 @@ public class StravaWebhookFunction(
         if (userData != null)
         {
             // Fetch activity details using the access token
-            await FetchAndProcessActivity(userData, webhookEvent.ObjectId);
+            _ = Task.Run(async () =>
+            {
+                await FetchAndProcessActivity(userData, webhookEvent.ObjectId);
+            });
         }
     }
 
