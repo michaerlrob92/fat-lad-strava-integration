@@ -3,10 +3,10 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using FLTL.StravaIntegration.Models;
 using FLTL.StravaIntegration.Services;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
+using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
+using System.Net;
 
 namespace FLTL.StravaIntegration.Functions;
 
@@ -16,76 +16,79 @@ public class StravaWebhookFunction(
     IHttpClientFactory factory)
 {
     private readonly HttpClient _httpClient = factory.CreateClient();
-    
-    [Function("StravaWebhookFunction")]
-    public async Task<IActionResult> Run(
+      [Function("StravaWebhookFunction")]
+    public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "strava-webhook")]
-        HttpRequest req)
-    {
+        HttpRequestData req)    {
         try
         {
-            return req.Method switch
+            return req.Method.ToUpper() switch
             {
-                "GET" => HandleVerification(req),
+                "GET" => await HandleVerification(req),
                 "POST" => await HandleWebhookEvent(req),
-                _ => new BadRequestObjectResult("Unsupported method")
+                _ => await CreateBadRequestResponse(req, "Unsupported method")
             };
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Error processing webhook request");
-            return new StatusCodeResult(500);
+            var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+            return errorResponse;
         }
     }
 
-    private IActionResult HandleVerification(HttpRequest req)
+    private async Task<HttpResponseData> HandleVerification(HttpRequestData req)
     {
         logger.LogInformation("Processing webhook verification");
 
-        // Get verification parameters
-        if (!req.Query.TryGetValue("hub.mode", out var modeValues) ||
-            !req.Query.TryGetValue("hub.verify_token", out var tokenValues) ||
-            !req.Query.TryGetValue("hub.challenge", out var challengeValues))
+        // Parse query parameters
+        var query = System.Web.HttpUtility.ParseQueryString(req.Url.Query);
+        var mode = query["hub.mode"];
+        var verifyToken = query["hub.verify_token"];
+        var challenge = query["hub.challenge"];
+
+        // Validate required parameters
+        if (string.IsNullOrEmpty(mode) || string.IsNullOrEmpty(verifyToken) || string.IsNullOrEmpty(challenge))
         {
             logger.LogWarning("Missing verification parameters");
-            return new BadRequestObjectResult("Missing verification parameters");
+            return await CreateBadRequestResponse(req, "Missing verification parameters");
         }
-
-        var mode = modeValues.FirstOrDefault();
-        var verifyToken = tokenValues.FirstOrDefault();
-        var challenge = challengeValues.FirstOrDefault();
 
         // Get expected verify token from environment
         var expectedToken = Environment.GetEnvironmentVariable("STRAVA_VERIFY_TOKEN");
         if (string.IsNullOrEmpty(expectedToken))
         {
             logger.LogError("Missing STRAVA_VERIFY_TOKEN environment variable");
-            return new StatusCodeResult(500);
-        } // Verify the request
+            var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+            return errorResponse;
+        }
 
+        // Verify the request
         if (mode == "subscribe" && verifyToken == expectedToken)
         {
             logger.LogInformation("Webhook verification successful, returning challenge");
-            return new JsonResult(new StravaWebhookVerifyResponse { Challenge = challenge });
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            var verifyResponse = new StravaWebhookVerifyResponse { Challenge = challenge };
+            await response.WriteAsJsonAsync(verifyResponse);
+            return response;
         }
 
         logger.LogWarning("Webhook verification failed: mode={Mode}, token_match={TokenMatch}",
             mode, verifyToken == expectedToken);
-        return new BadRequestObjectResult("Verification failed");
+        return await CreateBadRequestResponse(req, "Verification failed");
     }
 
-    private async Task<IActionResult> HandleWebhookEvent(HttpRequest req)
+    private async Task<HttpResponseData> HandleWebhookEvent(HttpRequestData req)
     {
         logger.LogInformation("Processing webhook event");
 
         // Read the request body
-        using var reader = new StreamReader(req.Body);
-        var requestBody = await reader.ReadToEndAsync();
+        var requestBody = await req.ReadAsStringAsync();
 
         if (string.IsNullOrEmpty(requestBody))
         {
             logger.LogWarning("Empty webhook payload");
-            return new BadRequestObjectResult("Empty payload");
+            return await CreateBadRequestResponse(req, "Empty payload");
         }
 
         try
@@ -94,9 +97,9 @@ public class StravaWebhookFunction(
             if (webhookEvent == null)
             {
                 logger.LogWarning("Failed to parse webhook payload");
-                return new BadRequestObjectResult("Invalid payload");
-            }            
-            
+                return await CreateBadRequestResponse(req, "Invalid payload");
+            }
+
             logger.LogInformation("Received webhook: {AspectType} {ObjectType} for owner {OwnerId}",
                 webhookEvent.AspectType, webhookEvent.ObjectType, webhookEvent.OwnerId);
 
@@ -113,13 +116,22 @@ public class StravaWebhookFunction(
                 }
             }
 
-            return new OkObjectResult("Event processed");
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            await response.WriteStringAsync("Event processed");
+            return response;
         }
         catch (JsonException ex)
         {
             logger.LogError(ex, "Failed to parse webhook JSON");
-            return new BadRequestObjectResult("Invalid JSON");
+            return await CreateBadRequestResponse(req, "Invalid JSON");
         }
+    }
+
+    private async Task<HttpResponseData> CreateBadRequestResponse(HttpRequestData req, string message)
+    {
+        var response = req.CreateResponse(HttpStatusCode.BadRequest);
+        await response.WriteStringAsync(message);
+        return response;
     }
 
     private async Task ProcessActivityCreated(StravaWebhookEvent webhookEvent)
@@ -236,7 +248,7 @@ public class StravaWebhookFunction(
                     footer = new
                     {
                         text = "Powered by Strava",
-                        icon_url = "https://camo.githubusercontent.com/cf95bc20ee9b22b2fb50a827a70ab0390f64b582975531abf7588ac190ef1869/68747470733a2f2f6564656e742e6769746875622e696f2f537570657254696e7949636f6e732f696d616765732f7376672f7374726176612e737667"
+                        icon_url = "https://d3nn82uaxijpm6.cloudfront.net/assets/settings/badges/48-e988944d47ed60d661eb5075e0875e09021cfecfb2ba5a56fb4e5fd1041fce25.png"
                     },
                     timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
                 }

@@ -1,29 +1,33 @@
 using FLTL.StravaIntegration.Helpers;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
+using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
+using System.Net;
 
 namespace FLTL.StravaIntegration.Functions;
 
 public class StravaAuthFunction(ILogger<StravaAuthFunction> logger)
-{
-    [Function("StravaAuthFunction")]
-    public IActionResult Run(
+{    [Function("StravaAuthFunction")]
+    public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "strava-auth")]
-        HttpRequest req)
+        HttpRequestData req)
     {
         try
         {
-            // Get user_id from query parameters
-            if (!req.Query.TryGetValue("user_id", out var userIdValues) ||
-                string.IsNullOrEmpty(userIdValues.FirstOrDefault()))
+            // Parse query parameters
+            var query = System.Web.HttpUtility.ParseQueryString(req.Url.Query);
+            var userId = query["user_id"];
+
+            // Validate user_id parameter
+            if (string.IsNullOrEmpty(userId))
             {
                 logger.LogWarning("Missing user_id parameter");
-                return new BadRequestObjectResult("Missing user_id parameter");
+                var badRequestResponse = req.CreateResponse(HttpStatusCode.BadRequest);
+                await badRequestResponse.WriteStringAsync("Missing user_id parameter");
+                return badRequestResponse;
             }
 
-            var discordUserId = userIdValues.First()!;
+            var discordUserId = userId;
             logger.LogInformation("Processing auth request for Discord user: {UserId}", discordUserId);
 
             // Get required environment variables
@@ -35,7 +39,8 @@ public class StravaAuthFunction(ILogger<StravaAuthFunction> logger)
                 string.IsNullOrEmpty(signingSecret))
             {
                 logger.LogError("Missing required environment variables");
-                return new StatusCodeResult(500);
+                var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+                return errorResponse;
             }
 
             // Generate signed state
@@ -51,13 +56,16 @@ public class StravaAuthFunction(ILogger<StravaAuthFunction> logger)
 
             logger.LogInformation("Redirecting to Strava OAuth for user: {UserId}", discordUserId);
 
-            // Return redirect response
-            return new RedirectResult(stravaAuthUrl);
+            // Create redirect response
+            var response = req.CreateResponse(HttpStatusCode.Redirect);
+            response.Headers.Add("Location", stravaAuthUrl);
+            return response;
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Error processing Strava auth request");
-            return new StatusCodeResult(500);
+            var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+            return errorResponse;
         }
     }
 }

@@ -2,10 +2,10 @@ using System.Text.Json;
 using FLTL.StravaIntegration.Helpers;
 using FLTL.StravaIntegration.Models;
 using FLTL.StravaIntegration.Services;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
+using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
+using System.Net;
 
 namespace FLTL.StravaIntegration.Functions;
 
@@ -13,31 +13,33 @@ public class StravaCallbackFunction(
     ILogger<StravaCallbackFunction> logger,
     HttpClient httpClient,
     IUserDataStorage userDataStorage)
-{
-    [Function("StravaCallbackFunction")]
-    public async Task<IActionResult> Run(
+{    [Function("StravaCallbackFunction")]
+    public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "strava-callback")]
-        HttpRequest req)
-    {
+        HttpRequestData req)    {
         try
         {
-            // Get code and state from query parameters
-            if (!req.Query.TryGetValue("code", out var codeValues) ||
-                string.IsNullOrEmpty(codeValues.FirstOrDefault()))
+            // Parse query parameters
+            var query = System.Web.HttpUtility.ParseQueryString(req.Url.Query);
+            var code = query["code"];
+            var state = query["state"];
+
+            // Validate required parameters
+            if (string.IsNullOrEmpty(code))
             {
                 logger.LogWarning("Missing code parameter");
-                return new BadRequestObjectResult("Missing code parameter");
+                var badRequestResponse = req.CreateResponse(HttpStatusCode.BadRequest);
+                await badRequestResponse.WriteStringAsync("Missing code parameter");
+                return badRequestResponse;
             }
 
-            if (!req.Query.TryGetValue("state", out var stateValues) ||
-                string.IsNullOrEmpty(stateValues.FirstOrDefault()))
+            if (string.IsNullOrEmpty(state))
             {
                 logger.LogWarning("Missing state parameter");
-                return new BadRequestObjectResult("Missing state parameter");
+                var badRequestResponse = req.CreateResponse(HttpStatusCode.BadRequest);
+                await badRequestResponse.WriteStringAsync("Missing state parameter");
+                return badRequestResponse;
             }
-
-            var code = codeValues.First()!;
-            var state = stateValues.First()!;
 
             logger.LogInformation("Processing callback with code and state");
 
@@ -46,14 +48,17 @@ public class StravaCallbackFunction(
             if (string.IsNullOrEmpty(signingSecret))
             {
                 logger.LogError("Missing STATE_SIGNING_SECRET environment variable");
-                return new StatusCodeResult(500);
+                var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+                return errorResponse;
             }
 
             // Verify state signature
             if (!HmacHelper.VerifySignedState(state, signingSecret, out var discordUserId))
             {
                 logger.LogWarning("Invalid state signature");
-                return new BadRequestObjectResult("Invalid state");
+                var badRequestResponse = req.CreateResponse(HttpStatusCode.BadRequest);
+                await badRequestResponse.WriteStringAsync("Invalid state");
+                return badRequestResponse;
             }
 
             logger.LogInformation("Processing callback for Discord user: {UserId}", discordUserId);
@@ -65,7 +70,8 @@ public class StravaCallbackFunction(
             if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
             {
                 logger.LogError("Missing required Strava client credentials");
-                return new StatusCodeResult(500);
+                var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+                return errorResponse;
             }
 
             // Exchange code for tokens
@@ -84,7 +90,8 @@ public class StravaCallbackFunction(
                 var errorContent = await tokenResponse.Content.ReadAsStringAsync();
                 logger.LogError("Token exchange failed: {StatusCode} - {Content}",
                     tokenResponse.StatusCode, errorContent);
-                return new StatusCodeResult(500);
+                var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+                return errorResponse;
             }
 
             var tokenResponseContent = await tokenResponse.Content.ReadAsStringAsync();
@@ -93,9 +100,11 @@ public class StravaCallbackFunction(
             if (tokenData == null)
             {
                 logger.LogError("Failed to parse token response");
-                return new StatusCodeResult(500);
-            } // Store user data
+                var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+                return errorResponse;
+            }
 
+            // Store user data
             var userData = new StravaUserData
             {
                 AccessToken = tokenData.AccessToken,
@@ -109,12 +118,15 @@ public class StravaCallbackFunction(
             logger.LogInformation("Successfully stored auth data for Discord user: {UserId}, Athlete: {AthleteId}",
                 discordUserId, tokenData.Athlete.Id);
 
-            return new OkObjectResult("Authorized with Strava");
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            await response.WriteStringAsync("Authorized with Strava");
+            return response;
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Error processing Strava callback");
-            return new StatusCodeResult(500);
+            var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+            return errorResponse;
         }
     }
 }
